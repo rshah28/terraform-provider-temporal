@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -32,7 +33,30 @@ import (
 const (
 	// day represents the number of nanoseconds in a day, used for time calculations.
 	day = 24 * time.Hour
+
+	// updateNamespaceMaxAttempts caps the retry loop on conditional-update
+	// conflicts. The cluster's namespace config_version may bump between
+	// our describe and update (internal frontend touch, replication, admin
+	// pod) — we re-fetch and retry with the fresh version.
+	updateNamespaceMaxAttempts = 4
 )
+
+// isNamespaceConditionalUpdateError matches Temporal's optimistic-
+// concurrency rejection on UpdateNamespace. The server surfaces these
+// with code Aborted/Unavailable/FailedPrecondition and a message that
+// includes "conditional update error: expect: N, actual: M".
+func isNamespaceConditionalUpdateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch status.Code(err) {
+	case codes.Aborted, codes.Unavailable, codes.FailedPrecondition:
+		// fall through
+	default:
+		return false
+	}
+	return strings.Contains(err.Error(), "conditional update error")
+}
 
 var (
 	_ resource.Resource                = &NamespaceResource{}
@@ -361,8 +385,29 @@ func (r *NamespaceResource) Update(ctx context.Context, req resource.UpdateReque
 		}
 	}
 
-	_, err = client.UpdateNamespace(ctx, request)
-	if err != nil {
+	// Retry on conditional-update conflicts: the namespace's config_version
+	// may bump between our describe and update due to internal frontend
+	// activity. Bounded retries with a short backoff.
+	var lastErr error
+	for attempt := 1; attempt <= updateNamespaceMaxAttempts; attempt++ {
+		_, lastErr = client.UpdateNamespace(ctx, request)
+		if lastErr == nil {
+			break
+		}
+		if !isNamespaceConditionalUpdateError(lastErr) {
+			break
+		}
+		tflog.Warn(ctx, "UpdateNamespace conditional-update conflict; retrying",
+			map[string]interface{}{"namespace": data.Name.ValueString(), "attempt": attempt, "err": lastErr.Error()})
+		// Exponential backoff: 100ms, 200ms, 400ms.
+		select {
+		case <-ctx.Done():
+			lastErr = ctx.Err()
+		case <-time.After(time.Duration(50*attempt*attempt) * time.Millisecond):
+		}
+	}
+	if lastErr != nil {
+		err = lastErr
 		if _, ok := err.(*serviceerror.NamespaceAlreadyExists); !ok {
 			resp.Diagnostics.AddError("Request error", "namespace registration failed: "+err.Error())
 			return

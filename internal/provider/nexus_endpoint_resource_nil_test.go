@@ -331,10 +331,18 @@ func TestUpdateModelFromEndpoint_WorkerTarget(t *testing.T) {
 	if !m.ExternalTarget.IsNull() {
 		t.Error("expected ExternalTarget null when worker target is set")
 	}
-	if got := m.WorkerTarget.Attributes()["namespace"].(types.String).ValueString(); got != "default" {
+	namespace, ok := m.WorkerTarget.Attributes()["namespace"].(types.String)
+	if !ok {
+		t.Fatal("worker namespace must be a string")
+	}
+	if got := namespace.ValueString(); got != "default" {
 		t.Errorf("worker namespace: got %q, want %q", got, "default")
 	}
-	if got := m.WorkerTarget.Attributes()["task_queue"].(types.String).ValueString(); got != "main" {
+	taskQueue, ok := m.WorkerTarget.Attributes()["task_queue"].(types.String)
+	if !ok {
+		t.Fatal("worker task_queue must be a string")
+	}
+	if got := taskQueue.ValueString(); got != "main" {
 		t.Errorf("worker task_queue: got %q, want %q", got, "main")
 	}
 }
@@ -366,7 +374,11 @@ func TestUpdateModelFromEndpoint_ExternalTarget(t *testing.T) {
 	if !m.WorkerTarget.IsNull() {
 		t.Error("expected WorkerTarget null when external target is set")
 	}
-	if got := m.ExternalTarget.Attributes()["url"].(types.String).ValueString(); got != "https://example.com/nexus" {
+	url, ok := m.ExternalTarget.Attributes()["url"].(types.String)
+	if !ok {
+		t.Fatal("external url must be a string")
+	}
+	if got := url.ValueString(); got != "https://example.com/nexus" {
 		t.Errorf("external url: got %q, want %q", got, "https://example.com/nexus")
 	}
 }
